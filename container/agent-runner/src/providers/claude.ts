@@ -58,6 +58,9 @@ const TOOL_ALLOWLIST = [
   'ToolSearch',
   'Skill',
   'NotebookEdit',
+  'mcp__nanoclaw__*',
+  'mcp__calendar__*',
+  'mcp__gmail__*',
 ];
 
 // MCP server names are sanitized by the SDK when forming tool prefixes:
