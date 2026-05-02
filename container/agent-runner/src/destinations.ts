@@ -91,6 +91,19 @@ export function buildSystemPromptAddendum(assistantName?: string): string {
   return sections.join('\n\n');
 }
 
+/**
+ * Compact one-line routing reminder to append to every human-turn prompt.
+ * Because it's injected per-message (not only in the system prompt), it
+ * survives context compaction and keeps the model on-protocol.
+ * Returns '' for zero- or single-destination agents.
+ */
+export function buildRoutingReminder(): string {
+  const all = getAllDestinations();
+  if (all.length <= 1) return '';
+  if (!all.some((d) => d.type === 'agent')) return '';
+  return '[reminder: to reach another agent use <message to="name">…</message>; text outside those blocks is scratchpad only and goes nowhere]';
+}
+
 function buildDestinationsSection(): string {
   const all = getAllDestinations();
 

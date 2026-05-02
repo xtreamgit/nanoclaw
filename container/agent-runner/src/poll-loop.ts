@@ -1,4 +1,4 @@
-import { findByName, getAllDestinations, type DestinationEntry } from './destinations.js';
+import { findByName, getAllDestinations, buildRoutingReminder, type DestinationEntry } from './destinations.js';
 import { getPendingMessages, markProcessing, markCompleted, type MessageInRow } from './db/messages-in.js';
 import { writeMessageOut } from './db/messages-out.js';
 import { getInboundDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
@@ -182,7 +182,10 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     setCurrentInReplyTo(routing.inReplyTo);
     try {
       const result = await processQuery(query, routing, processingIds, config.providerName);
-      if (result.continuation && result.continuation !== continuation) {
+      if (result.continuation === null) {
+        // processQuery explicitly cleared (e.g. compaction detected) — reset local copy too
+        continuation = undefined;
+      } else if (result.continuation && result.continuation !== continuation) {
         continuation = result.continuation;
         setContinuation(config.providerName, continuation);
       }
@@ -250,11 +253,14 @@ function formatMessagesWithCommands(messages: MessageInRow[], nativeSlashCommand
     parts.push(formatMessages(normalBatch));
   }
 
-  return parts.join('\n\n');
+  const prompt = parts.join('\n\n');
+  const reminder = buildRoutingReminder();
+  return reminder ? `${prompt}\n\n${reminder}` : prompt;
 }
 
 interface QueryResult {
-  continuation?: string;
+  // undefined = no update; null = explicitly cleared; string = new value
+  continuation?: string | null;
 }
 
 async function processQuery(
@@ -378,6 +384,17 @@ async function processQuery(
         // at all — either way the turn is finished.
         markCompleted(initialBatchIds);
         if (event.text) {
+          // Detect context compaction. When Claude Code compacts, the result
+          // text contains the compaction notice and the stored continuation
+          // points to the compacted session. After compaction, behavioral
+          // context (e.g. <message> block protocol) is lost from conversation
+          // history. Clearing the continuation forces the next turn to start
+          // a fresh session that re-reads the full system prompt.
+          if (/context compacted/i.test(event.text)) {
+            log('Context compaction detected — clearing continuation so next turn starts fresh');
+            clearContinuation(providerName);
+            queryContinuation = null; // signal outer loop to reset its copy
+          }
           const { hasUnwrapped } = dispatchResultText(event.text, routing);
           if (hasUnwrapped && !unwrappedNudged) {
             unwrappedNudged = true;
