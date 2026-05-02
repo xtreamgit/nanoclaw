@@ -254,3 +254,44 @@ XDG_DATA_HOME="$HOME/.google-workspace-mcp/data" \
 npx --yes @aaronsb/google-workspace-mcp
 # Then from an MCP client: manage_accounts { "operation": "authenticate" }
 ```
+
+---
+
+## 10. Context Compaction Breaks Agent-to-Agent Protocol
+
+**Symptom:** Sub-agent containers never spin up when Saul claims to be messaging them.
+The agent says "Sent to both" or "Pings sent to all agents" but the host log shows zero
+`Agent message routed` events. All outbound messages have `channel_type = 'telegram'` —
+none have `channel_type = 'agent'`.
+
+**Root cause:** Claude Code compacts context when a session accumulates ~100k+ tokens.
+The compaction generates a summary of the conversation, but the behavioral memory of the
+`<message to="name">...</message>` protocol is not preserved in that summary. After
+compaction, the agent continues talking but replies as plain text to the originating
+channel instead of wrapping outbound agent messages in XML blocks.
+
+Evidence: in Saul's session, message seq 1137 (15:42) was the last successful
+`channel_type = 'agent'` message. Seq 1139 (15:44) was a system message:
+`"Context compacted (132,009 tokens compacted)."` Every message from seq 1141 onward
+went to Telegram only.
+
+**Fix:** Delete the `continuation:claude` row from the session's `outbound.db`
+`session_state` table. This forces a clean session on next wake — the agent re-reads
+the full system prompt including the `<message>` block instructions.
+
+```bash
+SESS_DIR="data/v2-sessions/<agent-group-id>/<session-id>"
+sqlite3 "$SESS_DIR/outbound.db" "DELETE FROM session_state WHERE key LIKE 'continuation:%';"
+```
+
+After clearing, send a fresh message. The agent will start a new Claude Code conversation,
+read the `## Sending messages` section of the system prompt fresh, and correctly emit
+`<message to="name">` blocks.
+
+**This is equivalent to `/clear` in chat.** Tell users: if an agent stops routing messages
+to other agents, type `/clear` in that agent's DM to reset the session.
+
+**Recurrence risk:** Any long-running session approaching Claude's context limit will
+eventually compact. Compaction is not currently prevented or signaled in a way that
+triggers a protocol re-brief. Long-lived Saul sessions should be /cleared periodically
+(e.g., once a day) to prevent protocol drift.
