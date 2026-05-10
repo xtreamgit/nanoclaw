@@ -295,3 +295,87 @@ to other agents, type `/clear` in that agent's DM to reset the session.
 eventually compact. Compaction is not currently prevented or signaled in a way that
 triggers a protocol re-brief. Long-lived Saul sessions should be /cleared periodically
 (e.g., once a day) to prevent protocol drift.
+
+---
+
+## 11. OAuth Client Rotation — Stale Refresh Token After Credential Change
+
+**Date:** May 3, 2026
+
+**Symptom:** After rotating the Google OAuth client ID and secret (new GCP Desktop app
+credentials), the MCP server failed on every container start with:
+
+```
+token warmup failed for hector@develom.com: Token refresh failed (401): {"error":"unauthorized_client","error_description":"Unauthorized"}
+```
+
+**Root cause:** The credential file
+`~/.google-workspace-mcp/data/google-workspace-mcp/credentials/hector_at_develom_dot_com.json`
+contained a `refresh_token` issued by the **old** OAuth client. Even after updating
+`GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in every agent's `container.json`, Google
+rejects the refresh attempt because the token and the client credentials don't match.
+A refresh token is permanently bound to the client that issued it.
+
+**What was tried first:** Running `gws auth login` with the new credentials. It completed
+successfully and saved tokens to `~/.config/gws/credentials.enc` (an encrypted format
+used by the `@googleworkspace/cli` package). However, `@aaronsb/google-workspace-mcp`
+stores and reads credentials in its own JSON format at a different path — it cannot read
+the `gws` encrypted store. The MCP server continued failing.
+
+**Agents affected:** All five agents that had `google-workspace` configured in their
+`container.json`: Saul, Victor, Aleck, Morgan, Kai. Victor, Aleck, Morgan, and Kai
+had `google-workspace` added for the first time during this same session.
+
+**Fix — step by step:**
+
+1. Delete the stale credential file:
+   ```bash
+   rm ~/.google-workspace-mcp/data/google-workspace-mcp/credentials/hector_at_develom_dot_com.json
+   ```
+
+2. Run a fresh OAuth flow using a small Node.js script that calls the MCP server's own
+   `authenticateAccount` function directly (bypassing the CLI):
+   ```bash
+   # /tmp/gws-auth.mjs
+   import { authenticateAccount } from \
+     '~/.npm/_npx/<hash>/node_modules/@aaronsb/google-workspace-mcp/build/accounts/auth.js';
+
+   process.env.XDG_CONFIG_HOME = '/Users/hd/.google-workspace-mcp/config';
+   process.env.XDG_DATA_HOME   = '/Users/hd/.google-workspace-mcp/data';
+
+   const result = await authenticateAccount('<CLIENT_ID>', '<CLIENT_SECRET>');
+   console.log(result);
+   ```
+   ```bash
+   node /tmp/gws-auth.mjs
+   ```
+   A browser window opens for Google consent. On success the script prints:
+   ```json
+   { "status": "success", "account": "hector@develom.com", "credentialPath": "..." }
+   ```
+   The new credential file is saved directly in the format the MCP server expects,
+   with a refresh token bound to the new client.
+
+3. Verify:
+   ```bash
+   GOOGLE_CLIENT_ID=<new-id> \
+   GOOGLE_CLIENT_SECRET=<new-secret> \
+   XDG_CONFIG_HOME=/Users/hd/.google-workspace-mcp/config \
+   XDG_DATA_HOME=/Users/hd/.google-workspace-mcp/data \
+   npx @aaronsb/google-workspace-mcp status
+   ```
+   Expected output (no errors):
+   ```
+   [gws-mcp] startup: 11 tools loaded
+   [gws-mcp] startup: warming tokens for 1 account(s)
+   [gws-mcp] startup: token warmup complete
+   ```
+
+4. Kill any currently running agent containers so they respawn with the new credentials:
+   ```bash
+   docker ps --filter "name=nanoclaw" --format "{{.ID}}" | xargs docker kill
+   ```
+
+**Key rule:** Whenever you rotate Google OAuth client credentials, you must also delete
+the old credential file and re-run the OAuth flow. Updating `container.json` alone is
+not enough — the refresh token in the credential file must be re-issued by the new client.
