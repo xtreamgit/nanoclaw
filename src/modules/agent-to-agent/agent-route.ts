@@ -27,6 +27,7 @@ import { getInboundSourceSessionId, getMostRecentPeerSourceSessionId } from '../
 import { getSession } from '../../db/sessions.js';
 import { wakeContainer } from '../../container-runner.js';
 import { log } from '../../log.js';
+import { checkAndRecordSend } from '../routing-guard/index.js';
 import { openInboundDb, resolveSession, sessionDir, writeSessionMessage } from '../../session-manager.js';
 import type { Session } from '../../types.js';
 import { hasDestination } from './db/agent-destinations.js';
@@ -175,6 +176,30 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
   if (!getAgentGroup(targetAgentGroupId)) {
     throw new Error(`target agent group ${targetAgentGroupId} not found for message ${msg.id}`);
   }
+  // Self-messages bypass the guard — they're system-injected notes back into
+  // an agent's own session (e.g. post-approval prompts) and can't loop on
+  // another agent. Apply the guard only to true cross-agent traffic.
+  if (targetAgentGroupId !== session.agent_group_id) {
+    const decision = checkAndRecordSend({
+      senderId: session.agent_group_id,
+      recipientId: targetAgentGroupId,
+      content: msg.content,
+    });
+    if (!decision.allowed) {
+      log.warn('Agent message blocked by routing guard', {
+        msgId: msg.id,
+        from: session.agent_group_id,
+        to: targetAgentGroupId,
+        reason: decision.reason,
+        message: decision.message,
+      });
+      // Acknowledge by returning normally — the message stays in messages_out
+      // (its delivery state already advanced) but produces no inbound delivery
+      // and no container wake on the recipient side. This is the circuit-break.
+      return;
+    }
+  }
+
   const targetSession = resolveTargetSession(msg, session, targetAgentGroupId);
   const a2aMsgId = `a2a-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
