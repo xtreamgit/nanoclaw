@@ -15,6 +15,7 @@ import { runMigrations } from './db/migrations/index.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
 import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, stopDeliveryPolls } from './delivery.js';
 import { startHostSweep, stopHostSweep } from './host-sweep.js';
+import { startTokenIngestSweep, stopTokenIngestSweep } from './modules/token-tracking/index.js';
 import { routeInbound } from './router.js';
 import { log } from './log.js';
 
@@ -174,7 +175,14 @@ async function main(): Promise<void> {
   startHostSweep();
   log.info('Host sweep started');
 
-  // 7. Start the `ncl` CLI socket server (data/ncl.sock).
+  // 7. Start token-usage ingest sweep — pulls Claude Code's per-session JSONL
+  // logs into the central `token_usage` table for cost attribution. Cheap
+  // (incremental, byte-offset tracked); 60s cadence is plenty since we're
+  // not real-time. Failure here is non-fatal — the orchestrator keeps running.
+  startTokenIngestSweep();
+  log.info('Token ingest sweep started');
+
+  // 8. Start the `ncl` CLI socket server (data/ncl.sock).
   await startCliServer();
 
   log.info('NanoClaw running');
@@ -192,6 +200,7 @@ async function shutdown(signal: string): Promise<void> {
   }
   stopDeliveryPolls();
   stopHostSweep();
+  stopTokenIngestSweep();
   await stopCliServer();
   try {
     await teardownChannelAdapters();
