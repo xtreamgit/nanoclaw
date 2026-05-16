@@ -16,6 +16,7 @@ import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runti
 import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, stopDeliveryPolls } from './delivery.js';
 import { startHostSweep, stopHostSweep } from './host-sweep.js';
 import { startTokenIngestSweep, stopTokenIngestSweep } from './modules/token-tracking/index.js';
+import { startAlertSweep, stopAlertSweep } from './modules/alerts/index.js';
 import { routeInbound } from './router.js';
 import { log } from './log.js';
 
@@ -182,7 +183,14 @@ async function main(): Promise<void> {
   startTokenIngestSweep();
   log.info('Token ingest sweep started');
 
-  // 8. Start the `ncl` CLI socket server (data/ncl.sock).
+  // 8. Start alert sweep — evaluates cost / routing-burst / agent-regression
+  // thresholds against the data the previous two sweeps populate, and
+  // pushes notifications via Telegram on transitions. Cooldown-gated so
+  // a sustained breach produces one alert per hour, not 60 per hour.
+  startAlertSweep();
+  log.info('Alert sweep started');
+
+  // 9. Start the `ncl` CLI socket server (data/ncl.sock).
   await startCliServer();
 
   log.info('NanoClaw running');
@@ -201,6 +209,7 @@ async function shutdown(signal: string): Promise<void> {
   stopDeliveryPolls();
   stopHostSweep();
   stopTokenIngestSweep();
+  stopAlertSweep();
   await stopCliServer();
   try {
     await teardownChannelAdapters();

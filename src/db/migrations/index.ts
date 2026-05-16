@@ -16,6 +16,7 @@ import { moduleApprovalsPendingApprovals } from './module-approvals-pending-appr
 import { moduleApprovalsTitleOptions } from './module-approvals-title-options.js';
 import { moduleRoutingGuard } from './module-routing-guard.js';
 import { moduleTokenTracking } from './module-token-tracking.js';
+import { moduleAlerts } from './module-alerts.js';
 
 export interface Migration {
   version: number;
@@ -39,6 +40,7 @@ const migrations: Migration[] = [
   migration015,
   moduleRoutingGuard,
   moduleTokenTracking,
+  moduleAlerts,
 ];
 
 export function runMigrations(db: Database.Database): void {
