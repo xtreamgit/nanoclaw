@@ -13,6 +13,7 @@ import { migration013 } from './013-approval-render-metadata.js';
 import { moduleApprovalsPendingApprovals } from './module-approvals-pending-approvals.js';
 import { moduleApprovalsTitleOptions } from './module-approvals-title-options.js';
 import { moduleRoutingGuard } from './module-routing-guard.js';
+import { moduleTokenTracking } from './module-token-tracking.js';
 
 export interface Migration {
   version: number;
@@ -33,6 +34,7 @@ const migrations: Migration[] = [
   migration012,
   migration013,
   moduleRoutingGuard,
+  moduleTokenTracking,
 ];
 
 export function runMigrations(db: Database.Database): void {

@@ -67,21 +67,37 @@ happening?" questions without context-switching to the codebase.
 **Limit:** No history beyond what's still in DBs/logs. No remote access.
 No alerts.
 
-### Phase 2 — Token cost collector (1 day)
+### Phase 2 — Token cost collector ✅ SHIPPED
 
-The orchestrator and agent containers don't currently know what tokens
-each Claude API call consumed. Two viable data sources:
+**Path chosen:** Per-container Claude Code JSONL ingest. OneCLI turned
+out to be a closed-source binary (`/Users/hd/.local/bin/onecli` v1.5.0,
+Mach-O), and the proxy uses TLS-intercept so wire-sniffing isn't an
+option either. Patching it would require cooperation from the OneCLI
+maintainer.
 
-| Source | Pros | Cons |
-|---|---|---|
-| **OneCLI vault proxy** (recommended) | All Claude API traffic already flows through it; one place to instrument | Requires patching OneCLI; needs token-counting middleware |
-| Claude Code's `~/.claude/usage.jsonl` per container | No proxy changes needed | Per-container files; need a sidecar to ship them out |
+**The good news** — instrumentation wasn't needed at all. Claude Code
+already writes every assistant message (including usage) to JSONL files
+that the orchestrator can read directly from the host:
 
-**Recommendation: instrument OneCLI proxy.** Add a logging middleware
-that records `(timestamp, agent_group_id, model, input_tokens, output_tokens, cost_usd)`
-for every successful Anthropic API response. Append to a single
-`token-usage.jsonl` file on the host or write rows to a new
-`token_usage` table in `data/v2.db`.
+```
+data/v2-sessions/<agent_group_id>/.claude-shared/projects/<project>/<session>.jsonl
+```
+
+The agent_group_id is encoded in the path, so cost attribution comes
+for free.
+
+**What landed:**
+- `src/modules/token-tracking/` — pricing table, JSONL parser,
+  incremental ingest with byte-offset bookkeeping, periodic sweep
+- `src/db/migrations/module-token-tracking.ts` — `token_usage` and
+  `token_ingest_state` tables
+- Wired into orchestrator startup as a 60s sweep (alongside the
+  existing delivery and host sweeps)
+- 19 unit tests (parser + ingest + pricing + idempotency)
+
+**Verified against live data:** 35 JSONL files, 9,432 usage rows,
+~$344 of cumulative spend across all agents since install. Saul tops
+the table at $134, Jean Luc at $69 (inflated by the May 10 runaway).
 
 The proxy already knows the agent identity (it injects per-agent
 credentials), so attribution is free.
