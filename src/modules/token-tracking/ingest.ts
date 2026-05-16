@@ -21,8 +21,7 @@ import { getIngestState, insertUsageBatch, upsertIngestState, type TokenUsageRow
 // agent_group_id is the directory immediately above `.claude-shared`. We
 // don't anchor on `/v2-sessions/` further up — that lets tests point at any
 // temp dir, and lets the orchestrator's sessionsRoot be configurable.
-const SESSION_GLOB_RE =
-  /\/(?<agentGroupId>[^/]+)\/\.claude-shared\/projects\/[^/]+\/(?<sessionId>[^/]+)\.jsonl$/;
+const SESSION_GLOB_RE = /\/(?<agentGroupId>[^/]+)\/\.claude-shared\/projects\/[^/]+\/(?<sessionId>[^/]+)\.jsonl$/;
 
 interface JsonlLine {
   timestamp?: string;

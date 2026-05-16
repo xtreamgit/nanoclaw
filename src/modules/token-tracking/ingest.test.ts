@@ -57,15 +57,17 @@ function makeJsonlFile(
   return file;
 }
 
-const ASSISTANT_LINE = (overrides: Partial<{
-  msgId: string;
-  model: string;
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  ts: string;
-}> = {}) =>
+const ASSISTANT_LINE = (
+  overrides: Partial<{
+    msgId: string;
+    model: string;
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    ts: string;
+  }> = {},
+) =>
   JSON.stringify({
     timestamp: overrides.ts ?? '2026-05-15T16:00:00.000Z',
     sessionId: 'sess-test',
@@ -260,9 +262,7 @@ describe('runIngest', () => {
     expect(totals[1].i).toBe(3000);
 
     // Append a new line to one file; second run should pick up only the delta.
-    const saulFile = path.join(
-      tmp, 'ag-saul', '.claude-shared', 'projects', '-workspace-agent', 'sess-1.jsonl',
-    );
+    const saulFile = path.join(tmp, 'ag-saul', '.claude-shared', 'projects', '-workspace-agent', 'sess-1.jsonl');
     fs.appendFileSync(saulFile, ASSISTANT_LINE({ msgId: 'm-4', input: 100, output: 100 }) + '\n');
 
     const stats2 = runIngest(tmp, db);
