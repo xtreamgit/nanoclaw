@@ -60,19 +60,18 @@ describe('checkAndRecordSend', () => {
 
   describe('happy path', () => {
     it('allows the first send', () => {
-      const decision = checkAndRecordSend(
-        { senderId: 'a', recipientId: 'b', content: 'hello' },
-        db,
-      );
+      const decision = checkAndRecordSend({ senderId: 'a', recipientId: 'b', content: 'hello' }, db);
       expect(decision.allowed).toBe(true);
       expect(decision.reason).toBeUndefined();
     });
 
     it('records accepted sends in routing_send_log', () => {
       checkAndRecordSend({ senderId: 'a', recipientId: 'b', content: 'hello' }, db);
-      const rows = db
-        .prepare(`SELECT sender_id, recipient_id, content_hash FROM routing_send_log`)
-        .all() as Array<{ sender_id: string; recipient_id: string; content_hash: string }>;
+      const rows = db.prepare(`SELECT sender_id, recipient_id, content_hash FROM routing_send_log`).all() as Array<{
+        sender_id: string;
+        recipient_id: string;
+        content_hash: string;
+      }>;
       expect(rows).toHaveLength(1);
       expect(rows[0].sender_id).toBe('a');
       expect(rows[0].recipient_id).toBe('b');
@@ -90,10 +89,7 @@ describe('checkAndRecordSend', () => {
     it('allows up to dedupMaxRepeats identical sends', () => {
       // Default is 3 — first three should pass.
       for (let i = 0; i < 3; i++) {
-        const decision = checkAndRecordSend(
-          { senderId: 'a', recipientId: 'b', content: 'same' },
-          db,
-        );
+        const decision = checkAndRecordSend({ senderId: 'a', recipientId: 'b', content: 'same' }, db);
         expect(decision.allowed).toBe(true);
       }
     });
@@ -102,10 +98,7 @@ describe('checkAndRecordSend', () => {
       for (let i = 0; i < 3; i++) {
         checkAndRecordSend({ senderId: 'a', recipientId: 'b', content: 'same' }, db);
       }
-      const decision = checkAndRecordSend(
-        { senderId: 'a', recipientId: 'b', content: 'same' },
-        db,
-      );
+      const decision = checkAndRecordSend({ senderId: 'a', recipientId: 'b', content: 'same' }, db);
       expect(decision.allowed).toBe(false);
       expect(decision.reason).toBe('dedup');
     });
@@ -131,10 +124,7 @@ describe('checkAndRecordSend', () => {
       for (let i = 0; i < 3; i++) {
         checkAndRecordSend({ senderId: 'a', recipientId: 'b', content: 'msg-1' }, db);
       }
-      const decision = checkAndRecordSend(
-        { senderId: 'a', recipientId: 'b', content: 'msg-2' },
-        db,
-      );
+      const decision = checkAndRecordSend({ senderId: 'a', recipientId: 'b', content: 'msg-2' }, db);
       expect(decision.allowed).toBe(true);
     });
 
@@ -142,10 +132,7 @@ describe('checkAndRecordSend', () => {
       for (let i = 0; i < 3; i++) {
         checkAndRecordSend({ senderId: 'a', recipientId: 'b', content: 'same' }, db);
       }
-      const decision = checkAndRecordSend(
-        { senderId: 'a', recipientId: 'c', content: 'same' },
-        db,
-      );
+      const decision = checkAndRecordSend({ senderId: 'a', recipientId: 'c', content: 'same' }, db);
       expect(decision.allowed).toBe(true);
     });
 
@@ -153,10 +140,7 @@ describe('checkAndRecordSend', () => {
       checkAndRecordSend({ senderId: 'a', recipientId: 'b', content: 'hello' }, db);
       checkAndRecordSend({ senderId: 'a', recipientId: 'b', content: '  hello  ' }, db);
       checkAndRecordSend({ senderId: 'a', recipientId: 'b', content: '\nhello\n' }, db);
-      const decision = checkAndRecordSend(
-        { senderId: 'a', recipientId: 'b', content: 'hello' },
-        db,
-      );
+      const decision = checkAndRecordSend({ senderId: 'a', recipientId: 'b', content: 'hello' }, db);
       expect(decision.allowed).toBe(false);
       expect(decision.reason).toBe('dedup');
     });
@@ -166,10 +150,7 @@ describe('checkAndRecordSend', () => {
     it('allows up to rateLimitPerHour sends with varied content', () => {
       // Default is 60 — every send has a unique body so dedup never fires.
       for (let i = 0; i < 60; i++) {
-        const decision = checkAndRecordSend(
-          { senderId: 'a', recipientId: 'b', content: `unique-${i}` },
-          db,
-        );
+        const decision = checkAndRecordSend({ senderId: 'a', recipientId: 'b', content: `unique-${i}` }, db);
         expect(decision.allowed).toBe(true);
       }
     });
@@ -178,10 +159,7 @@ describe('checkAndRecordSend', () => {
       for (let i = 0; i < 60; i++) {
         checkAndRecordSend({ senderId: 'a', recipientId: 'b', content: `unique-${i}` }, db);
       }
-      const decision = checkAndRecordSend(
-        { senderId: 'a', recipientId: 'b', content: 'one-more' },
-        db,
-      );
+      const decision = checkAndRecordSend({ senderId: 'a', recipientId: 'b', content: 'one-more' }, db);
       expect(decision.allowed).toBe(false);
       expect(decision.reason).toBe('rate_limit');
     });
@@ -195,10 +173,7 @@ describe('checkAndRecordSend', () => {
         ).run('a', 'b', `hash-${i}`, oldTimestamp);
       }
       // Fresh send should now be allowed — old ones don't count.
-      const decision = checkAndRecordSend(
-        { senderId: 'a', recipientId: 'b', content: 'fresh' },
-        db,
-      );
+      const decision = checkAndRecordSend({ senderId: 'a', recipientId: 'b', content: 'fresh' }, db);
       expect(decision.allowed).toBe(true);
     });
   });
@@ -212,10 +187,7 @@ describe('checkAndRecordSend', () => {
         '{"text":"Error: Claude Code native binary not found at /pnpm/bin/claude. Please ensure..."}';
       const accepted: boolean[] = [];
       for (let i = 0; i < 100; i++) {
-        const decision = checkAndRecordSend(
-          { senderId: 'saul', recipientId: 'jean-luc', content: errorContent },
-          db,
-        );
+        const decision = checkAndRecordSend({ senderId: 'saul', recipientId: 'jean-luc', content: errorContent }, db);
         accepted.push(decision.allowed);
       }
       const acceptedCount = accepted.filter(Boolean).length;
@@ -240,16 +212,10 @@ describe('checkAndRecordSend', () => {
       _resetOverridesCacheForTests();
 
       for (let i = 0; i < 5; i++) {
-        const decision = checkAndRecordSend(
-          { senderId: 'a', recipientId: 'b', content: `unique-${i}` },
-          db,
-        );
+        const decision = checkAndRecordSend({ senderId: 'a', recipientId: 'b', content: `unique-${i}` }, db);
         expect(decision.allowed).toBe(true);
       }
-      const decision = checkAndRecordSend(
-        { senderId: 'a', recipientId: 'b', content: 'one-more' },
-        db,
-      );
+      const decision = checkAndRecordSend({ senderId: 'a', recipientId: 'b', content: 'one-more' }, db);
       expect(decision.allowed).toBe(false);
       expect(decision.reason).toBe('rate_limit');
     });
@@ -264,10 +230,7 @@ describe('checkAndRecordSend', () => {
         checkAndRecordSend({ senderId: 'a', recipientId: 'b', content: `x-${i}` }, db);
       }
       // Different recipient — uses default 60.
-      const decision = checkAndRecordSend(
-        { senderId: 'a', recipientId: 'c', content: 'fresh' },
-        db,
-      );
+      const decision = checkAndRecordSend({ senderId: 'a', recipientId: 'c', content: 'fresh' }, db);
       expect(decision.allowed).toBe(true);
     });
   });
@@ -276,10 +239,7 @@ describe('checkAndRecordSend', () => {
     it('allows sends without recording when env var is set', () => {
       process.env.GUARD_DISABLED = '1';
       for (let i = 0; i < 200; i++) {
-        const decision = checkAndRecordSend(
-          { senderId: 'a', recipientId: 'b', content: 'same' },
-          db,
-        );
+        const decision = checkAndRecordSend({ senderId: 'a', recipientId: 'b', content: 'same' }, db);
         expect(decision.allowed).toBe(true);
       }
       const sendRows = db.prepare(`SELECT COUNT(*) AS n FROM routing_send_log`).get() as { n: number };
