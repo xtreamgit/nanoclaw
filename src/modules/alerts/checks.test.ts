@@ -180,9 +180,12 @@ describe('checkAgentRegression', () => {
   afterEach(() => db.close());
 
   function session(id: string, agent: string, lastActive: string): void {
-    db.prepare(
-      `INSERT INTO sessions (id, agent_group_id, last_active, created_at) VALUES (?,?,?,?)`,
-    ).run(id, agent, lastActive, now());
+    db.prepare(`INSERT INTO sessions (id, agent_group_id, last_active, created_at) VALUES (?,?,?,?)`).run(
+      id,
+      agent,
+      lastActive,
+      now(),
+    );
   }
 
   it('returns nothing for agents that have spawned recently', () => {
@@ -249,11 +252,7 @@ describe('cooldown', () => {
   afterEach(() => db.close());
 
   it('returns true within the cooldown window', () => {
-    recordAlert(
-      { triggerType: 'cost_spike', pairKey: '__global__', payload: {} },
-      { delivered: true },
-      db,
-    );
+    recordAlert({ triggerType: 'cost_spike', pairKey: '__global__', payload: {} }, { delivered: true }, db);
     expect(isInCooldown('cost_spike', '__global__', 60 * 60 * 1000, db)).toBe(true);
   });
 
@@ -266,11 +265,7 @@ describe('cooldown', () => {
   });
 
   it('per-pair cooldown does not affect other pairs', () => {
-    recordAlert(
-      { triggerType: 'routing_burst', pairKey: 'a:b', payload: {} },
-      { delivered: true },
-      db,
-    );
+    recordAlert({ triggerType: 'routing_burst', pairKey: 'a:b', payload: {} }, { delivered: true }, db);
     expect(isInCooldown('routing_burst', 'a:b', 60 * 60 * 1000, db)).toBe(true);
     expect(isInCooldown('routing_burst', 'c:d', 60 * 60 * 1000, db)).toBe(false);
   });
