@@ -2,6 +2,14 @@
  * Telegram channel adapter (v2) — uses Chat SDK bridge, with a pairing
  * interceptor wrapped around onInbound to verify chat ownership before
  * registration. See telegram-pairing.ts for the why.
+ *
+ * Polling resilience: a TelegramPollingWatchdog runs alongside the adapter.
+ * It probes api.telegram.org/getMe every 60 s and force-restarts the adapter
+ * on an offline → online edge. This fixes two failure modes the SDK's own
+ * retry logic cannot recover from on its own:
+ *   1. Frozen fetch (half-open TCP socket after Mac sleep / WiFi drop)
+ *   2. Slow recovery (polling loop sitting in 30 s backoff when network returns)
+ * See telegram-watchdog.ts for the full rationale.
  */
 import { createTelegramAdapter } from '@chat-adapter/telegram';
 
@@ -15,6 +23,7 @@ import { sanitizeTelegramLegacyMarkdown } from './telegram-markdown-sanitize.js'
 import { registerChannelAdapter } from './channel-registry.js';
 import type { ChannelAdapter, ChannelSetup, InboundMessage } from './adapter.js';
 import { tryConsume } from './telegram-pairing.js';
+import { TelegramPollingWatchdog } from './telegram-watchdog.js';
 
 /**
  * Retry a one-shot operation that can fail on transient network errors at
@@ -200,9 +209,16 @@ registerChannelAdapter('telegram', {
     const env = readEnvFile(['TELEGRAM_BOT_TOKEN']);
     if (!env.TELEGRAM_BOT_TOKEN) return null;
     const token = env.TELEGRAM_BOT_TOKEN;
+
+    // Shorter poll window: 10 s instead of the SDK default of 30 s.
+    // Each getUpdates call blocks for at most 10 s server-side, so a
+    // half-open TCP connection is abandoned and retried roughly 3× faster
+    // than with the default config. The trade-off (slightly more frequent
+    // Telegram API calls during idle periods) is negligible.
     const telegramAdapter = createTelegramAdapter({
       botToken: token,
       mode: 'polling',
+      longPolling: { timeout: 10 },
     });
     const bridge = createChatSdkBridge({
       adapter: telegramAdapter,
@@ -214,14 +230,33 @@ registerChannelAdapter('telegram', {
 
     const botUsernamePromise = fetchBotUsername(token);
 
+    // savedSetup holds the ChannelSetup from the last setup() call so the
+    // watchdog can re-invoke it during a restart without needing to
+    // propagate the config through a separate channel.
+    let savedSetup: ChannelSetup | null = null;
+
+    const watchdog = new TelegramPollingWatchdog({
+      botToken: token,
+      onRestart: async () => {
+        if (!savedSetup) return;
+        await bridge.teardown();
+        await withRetry(() => bridge.setup(savedSetup!), 'watchdog-restart');
+      },
+    });
+
     const wrapped: ChannelAdapter = {
       ...bridge,
       async setup(hostConfig: ChannelSetup) {
-        const intercepted: ChannelSetup = {
+        savedSetup = {
           ...hostConfig,
           onInbound: createPairingInterceptor(botUsernamePromise, hostConfig.onInbound, token),
         };
-        return withRetry(() => bridge.setup(intercepted), 'bridge.setup');
+        await withRetry(() => bridge.setup(savedSetup!), 'bridge.setup');
+        watchdog.start();
+      },
+      async teardown() {
+        watchdog.stop();
+        return bridge.teardown();
       },
     };
     return wrapped;
