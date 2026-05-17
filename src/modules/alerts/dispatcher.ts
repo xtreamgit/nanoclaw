@@ -36,20 +36,21 @@ export function formatMessage(alert: AlertRecord): string {
 
 export interface DispatchResult {
   delivered: boolean;
+  /** Channel that successfully delivered, when delivered=true. */
+  via?: 'telegram' | 'email';
   error?: string;
 }
 
 /**
- * Best-effort Telegram push using the existing bot token. We send via raw
- * HTTPS rather than the channel adapter so the alert path:
+ * Telegram-only send. Exported so the orchestrator (and tests) can hit it
+ * directly; production callers should use `dispatch()` which adds the
+ * email fallback. Uses raw HTTPS rather than the channel adapter so the
+ * alert path:
  *   - has zero coupling to channel registration timing
  *   - survives if the channel adapter is temporarily broken
  *   - doesn't compete with normal Saul-DM traffic for adapter state
- *
- * Failure is non-fatal — we log and record the error in alert_history so
- * the operator can see it later if alerts mysteriously stop arriving.
  */
-export async function dispatch(alert: AlertRecord): Promise<DispatchResult> {
+export async function dispatchTelegram(alert: AlertRecord): Promise<DispatchResult> {
   const cfg = dispatchConfig();
   if (!cfg) {
     return { delivered: false, error: 'ALERT_TELEGRAM_CHAT_ID or TELEGRAM_BOT_TOKEN not set' };
@@ -71,9 +72,45 @@ export async function dispatch(alert: AlertRecord): Promise<DispatchResult> {
       const body = await res.text();
       return { delivered: false, error: `HTTP ${res.status}: ${body.slice(0, 200)}` };
     }
-    return { delivered: true };
+    return { delivered: true, via: 'telegram' };
   } catch (err) {
-    log.warn('alert dispatch failed', { triggerType: alert.triggerType, err: String(err) });
+    log.warn('alert telegram dispatch failed', { triggerType: alert.triggerType, err: String(err) });
     return { delivered: false, error: String(err).slice(0, 200) };
   }
+}
+
+/**
+ * Primary alert dispatch. Tries Telegram first; if that fails AND email is
+ * configured (see email-dispatcher.ts for required env), falls back to
+ * email. Returns a single combined result.
+ *
+ * Why primary/fallback rather than send-to-both: under normal conditions
+ * one notification per alert is what the operator wants. Email is here
+ * precisely for the case where Telegram is the thing that broke — so
+ * sending email when Telegram succeeded would mostly just be noise.
+ *
+ * If both channels fail the error includes both diagnostics joined.
+ */
+export async function dispatch(alert: AlertRecord): Promise<DispatchResult> {
+  const tg = await dispatchTelegram(alert);
+  if (tg.delivered) return tg;
+
+  // Telegram failed (no config, transient network, etc.) — try email if set up.
+  // dispatchEmail returns {delivered:false, error:"not configured"} when the env
+  // isn't set, which we surface as part of the combined error so the operator
+  // can see why neither channel paged.
+  const { dispatchEmail } = await import('./email-dispatcher.js');
+  const em = await dispatchEmail(alert);
+  if (em.delivered) {
+    log.info('alert delivered via email fallback (telegram failed)', {
+      triggerType: alert.triggerType,
+      telegramError: tg.error,
+    });
+    return { delivered: true, via: 'email' };
+  }
+
+  return {
+    delivered: false,
+    error: `telegram: ${tg.error ?? 'unknown'} | email: ${em.error ?? 'unknown'}`,
+  };
 }

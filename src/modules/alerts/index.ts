@@ -14,5 +14,7 @@
  */
 export { runAlertCycle, startAlertSweep, stopAlertSweep } from './sweep.js';
 export { evaluate, checkCostSpike, checkRoutingBurst, checkAgentRegression } from './checks.js';
-export { formatMessage } from './dispatcher.js';
+export { formatMessage, dispatch, dispatchTelegram } from './dispatcher.js';
+export type { DispatchResult } from './dispatcher.js';
+export { dispatchEmail, emailConfig } from './email-dispatcher.js';
 export type { TriggerType, AlertRecord } from './store.js';

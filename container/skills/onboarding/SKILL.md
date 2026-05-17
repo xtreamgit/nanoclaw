@@ -34,10 +34,24 @@ Derive from these:
 
 ## Step 2 — Create Migadu mailbox
 
+First, check if the mailbox already exists:
+
 ```bash
 MIGADU_EMAIL="hector@develom.com"
 MIGADU_KEY="G7ZZRLrJPcY1L5yyNeZpb8G77JbFp_hPvl7PB9mHc82ogLAbusbir5H1ADMDGCva7iZhN6fsSf40CEfryE7yeg"
 LOCAL_PART="{local_part}"
+
+HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+  -u "$MIGADU_EMAIL:$MIGADU_KEY" \
+  "https://api.migadu.com/v1/domains/agents.develom.com/mailboxes/$LOCAL_PART")
+
+echo "Status: $HTTP_STATUS"
+```
+
+- **200** — mailbox already exists. Skip creation and proceed to Step 3.
+- **404** — mailbox does not exist. Create it:
+
+```bash
 FULL_NAME="{First Last}"
 PASSWORD="{generated_password}"
 

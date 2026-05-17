@@ -46,7 +46,8 @@ Sections shown:
   3. Outbound traffic    (per-agent agent/telegram counts in window)
   4. Routing-guard       (blocked sends from routing_blocks table)
   5. Top errors          (most frequent error messages, file-lifetime)
-  6. Token cost          (Phase 2 placeholder — token_usage table)
+  6. Alerts fired        (alert_history rows + last delivery status)
+  7. Token cost          (per-agent USD from token_usage table)
 
 Env vars:
   NANOCLAW_DIR           override install dir (default: ~/github.com/xtreamgit/claudecode/AGENT-Installs/nanoclaw)
@@ -285,7 +286,59 @@ else
   fi
 fi
 
-# ─── 6. cost (Phase 2 placeholder) ──────────────────────────────────────
+# ─── 6. recent alert firings ────────────────────────────────────────────
+print_header "Alerts fired (last ${HOURS}h)"
+
+HAS_ALERT_HIST=$(sqlite3 "$DB" "SELECT name FROM sqlite_master WHERE type='table' AND name='alert_history';" 2>/dev/null || true)
+if [[ -z "$HAS_ALERT_HIST" ]]; then
+  echo "  ${C_DIM}(alert_history table not present — alerts module not installed)${C_RST}"
+else
+  # Aggregate: one row per (trigger_type, pair_key) showing fire count, last
+  # fire, whether the most recent fire was delivered. The cooldown ledger
+  # records every fire even if dispatch failed, so this surface tells you
+  # both "what conditions triggered" AND "did the operator actually get
+  # paged."
+  ALERT_ROWS=$(sqlite3 "$DB" "
+    SELECT
+      trigger_type,
+      pair_key,
+      COUNT(*) AS fires,
+      MAX(fired_at) AS last_fire,
+      (SELECT delivered FROM alert_history a2
+        WHERE a2.trigger_type = a.trigger_type AND a2.pair_key = a.pair_key
+        ORDER BY a2.fired_at DESC LIMIT 1) AS last_delivered,
+      (SELECT delivery_error FROM alert_history a2
+        WHERE a2.trigger_type = a.trigger_type AND a2.pair_key = a.pair_key
+        ORDER BY a2.fired_at DESC LIMIT 1) AS last_error
+    FROM alert_history a
+    WHERE fired_at >= '$SINCE'
+    GROUP BY trigger_type, pair_key
+    ORDER BY last_fire DESC
+    LIMIT 20;
+  " 2>/dev/null || true)
+
+  if [[ -z "$ALERT_ROWS" ]]; then
+    echo "  ${C_OK}(none — no alerts fired in window)${C_RST}"
+  else
+    printf "  %-18s  %-25s  %5s  %-19s  %s\n" "TYPE" "PAIR" "FIRES" "LAST" "STATUS"
+    while IFS='|' read -r ttype pair fires last delivered err; do
+      [[ -z "$ttype" ]] && continue
+      if [[ "$delivered" == "1" ]]; then
+        status="${C_OK}delivered${C_RST}"
+      else
+        # Squeeze the error onto one line, truncate if needed.
+        short_err=$(echo "$err" | tr '\n' ' ' | cut -c1-50)
+        status="${C_ERR}failed${C_RST} ${C_DIM}${short_err}${C_RST}"
+      fi
+      # Compact the long ISO timestamp for column fit (drop sub-second + Z).
+      short_last=$(echo "$last" | sed 's/\.[0-9]*Z$//;s/T/ /')
+      printf "  %-18s  %-25s  %5s  %-19s  %s\n" \
+        "$ttype" "$(echo "$pair" | cut -c1-25)" "$fires" "$short_last" "$status"
+    done <<<"$ALERT_ROWS"
+  fi
+fi
+
+# ─── 7. cost (Phase 2) ──────────────────────────────────────────────────
 print_header "Token cost (last ${HOURS}h)"
 HAS_USAGE=$(sqlite3 "$DB" "SELECT name FROM sqlite_master WHERE type='table' AND name='token_usage';" 2>/dev/null || true)
 if [[ -z "$HAS_USAGE" ]]; then
