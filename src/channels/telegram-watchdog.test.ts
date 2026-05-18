@@ -77,7 +77,9 @@ describe('TelegramPollingWatchdog', () => {
     it('does not run a second probe while a restart is in progress', async () => {
       let restartStarted = false;
       let resolveRestart!: () => void;
-      const restartLatch = new Promise<void>((res) => { resolveRestart = res; });
+      const restartLatch = new Promise<void>((res) => {
+        resolveRestart = res;
+      });
       const onRestart = vi.fn().mockImplementation(async () => {
         restartStarted = true;
         await restartLatch;
