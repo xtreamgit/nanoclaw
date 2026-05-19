@@ -27,6 +27,7 @@ import { composeGroupClaudeMd } from './claude-md-compose.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import { getDb, hasTable } from './db/connection.js';
 import { initGroupFilesystem } from './group-init.js';
+import { dispatchConfig } from './modules/alerts/config.js';
 import { stopTypingRefresh } from './modules/typing/index.js';
 import { log } from './log.js';
 import { validateAdditionalMounts } from './modules/mount-security/index.js';
@@ -62,6 +63,15 @@ const activeContainers = new Map<string, { process: ChildProcess; containerName:
  */
 const wakePromises = new Map<string, Promise<boolean>>();
 
+// Launch retry cap — prevent infinite retry loops when spawning is persistently broken.
+const MAX_WAKE_FAILURES = 3;
+const WAKE_HOLD_MS = 15 * 60 * 1000; // 15-minute cooldown before retrying a held session
+interface WakeFailureState {
+  count: number;
+  heldUntil: number; // epoch ms; 0 = not held
+}
+const wakeFailures = new Map<string, WakeFailureState>();
+
 export function getActiveContainerCount(): number {
   return activeContainers.size;
 }
@@ -87,15 +97,52 @@ export function wakeContainer(session: Session): Promise<boolean> {
     log.debug('Container already running', { sessionId: session.id });
     return Promise.resolve(true);
   }
+
+  // Respect hold state: if this session is past the max failure cap, skip until
+  // the cooldown window clears. This prevents the sweep from hammering a broken
+  // spawn path (missing binary, OneCLI down, etc.) on every tick.
+  const failState = wakeFailures.get(session.id);
+  if (failState && failState.heldUntil > Date.now()) {
+    log.debug('Container wake suppressed — in hold state', {
+      sessionId: session.id,
+      heldUntilMs: failState.heldUntil,
+      failures: failState.count,
+    });
+    return Promise.resolve(false);
+  }
+
   const existing = wakePromises.get(session.id);
   if (existing) {
     log.debug('Container wake already in-flight — joining existing promise', { sessionId: session.id });
     return existing;
   }
   const promise = spawnContainer(session)
-    .then(() => true)
+    .then(() => {
+      // Clear failure state on successful spawn.
+      wakeFailures.delete(session.id);
+      return true;
+    })
     .catch((err) => {
-      log.warn('wakeContainer failed — host-sweep will retry', { sessionId: session.id, err });
+      const prev = wakeFailures.get(session.id) ?? { count: 0, heldUntil: 0 };
+      const next: WakeFailureState = { count: prev.count + 1, heldUntil: 0 };
+      if (next.count >= MAX_WAKE_FAILURES) {
+        next.heldUntil = Date.now() + WAKE_HOLD_MS;
+        log.error('Container spawn failed repeatedly — entering hold state', {
+          sessionId: session.id,
+          failures: next.count,
+          holdMs: WAKE_HOLD_MS,
+          err,
+        });
+        // Fire-and-forget Telegram alert so Hector is notified.
+        sendWakeFailureAlert(session.id, next.count).catch(() => {});
+      } else {
+        log.warn('wakeContainer failed — host-sweep will retry', {
+          sessionId: session.id,
+          failures: next.count,
+          err,
+        });
+      }
+      wakeFailures.set(session.id, next);
       return false;
     })
     .finally(() => {
@@ -103,6 +150,26 @@ export function wakeContainer(session: Session): Promise<boolean> {
     });
   wakePromises.set(session.id, promise);
   return promise;
+}
+
+async function sendWakeFailureAlert(sessionId: string, failureCount: number): Promise<void> {
+  const cfg = dispatchConfig();
+  if (!cfg) return;
+  const text =
+    `🚨 *Container spawn failed* (${failureCount}× consecutive)\n` +
+    `Session: \`${sessionId}\`\n` +
+    `NanoClaw has entered hold state for this session. ` +
+    `Investigate spawn errors, then restart the service to clear the hold.`;
+  const url = `https://api.telegram.org/bot${cfg.botToken}/sendMessage`;
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: cfg.chatId, text, parse_mode: 'Markdown' }),
+    });
+  } catch (err) {
+    log.warn('Failed to send wake-failure Telegram alert', { sessionId, err });
+  }
 }
 
 async function spawnContainer(session: Session): Promise<void> {

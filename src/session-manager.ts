@@ -10,6 +10,7 @@
  *   3. One writer per file — DELETE-mode journal-unlink isn't atomic across
  *      the mount; concurrent writers corrupt the DB.
  */
+import crypto from 'crypto';
 import type Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
@@ -37,6 +38,13 @@ import {
 } from './db/session-db.js';
 import { log } from './log.js';
 import type { Session } from './types.js';
+
+// Per-sender rate cap: max messages from one platform_id within the window.
+// Keeps a context-flood attack (looping agent, runaway cron) from drowning a session.
+const RATE_CAP_WINDOW_SECS = 60;
+const RATE_CAP_MAX_MSGS = 10;
+// Identical-content dedup window — drop byte-for-byte repeats from the same sender.
+const DEDUP_WINDOW_SECS = 5;
 
 function isPathInside(parent: string, child: string): boolean {
   const relative = path.relative(parent, child);
@@ -228,6 +236,66 @@ export function writeSessionMessage(
 
   const db = openInboundDb(agentGroupId, sessionId);
   try {
+    // Rate-cap: guard against context floods from external senders.
+    // Skipped for system/scheduling messages (no platformId).
+    if (message.platformId) {
+      // 1. Content dedup — drop byte-for-byte repeats within the dedup window.
+      const isDup = db
+        .prepare(
+          `SELECT 1 FROM messages_in
+           WHERE platform_id = ? AND content = ?
+             AND timestamp > datetime('now', '-${DEDUP_WINDOW_SECS} seconds')
+           LIMIT 1`,
+        )
+        .get(message.platformId, content) as 1 | undefined;
+      if (isDup) {
+        log.debug('Dropping duplicate message from sender', { platformId: message.platformId, sessionId });
+        return;
+      }
+
+      // 2. Per-sender volume cap — count messages from this sender in the window.
+      const { count } = db
+        .prepare(
+          `SELECT COUNT(*) as count FROM messages_in
+           WHERE platform_id = ? AND timestamp > datetime('now', '-${RATE_CAP_WINDOW_SECS} seconds')`,
+        )
+        .get(message.platformId) as { count: number };
+
+      if (count >= RATE_CAP_MAX_MSGS) {
+        // Insert a single rate-limit notice per window — don't spam one per dropped message.
+        const alreadyNoticed = db
+          .prepare(
+            `SELECT 1 FROM messages_in
+             WHERE kind = 'rate-limit-notice'
+               AND timestamp > datetime('now', '-${RATE_CAP_WINDOW_SECS} seconds')
+             LIMIT 1`,
+          )
+          .get() as 1 | undefined;
+        if (!alreadyNoticed) {
+          insertMessage(db, {
+            id: crypto.randomUUID(),
+            kind: 'rate-limit-notice',
+            timestamp: new Date().toISOString(),
+            platformId: null,
+            channelType: message.channelType ?? null,
+            threadId: message.threadId ?? null,
+            content: `[System] Rate limit: ${count} messages from ${message.platformId} in ${RATE_CAP_WINDOW_SECS}s (cap: ${RATE_CAP_MAX_MSGS}). Further messages from this sender are dropped until the window clears.`,
+            processAfter: null,
+            recurrence: null,
+            trigger: 1,
+            sourceSessionId: null,
+            onWake: 0,
+          });
+          log.warn('Rate cap exceeded — notice injected, sender throttled', {
+            platformId: message.platformId,
+            count,
+            sessionId,
+          });
+        }
+        return;
+      }
+    }
+
     insertMessage(db, {
       id: message.id,
       kind: message.kind,
