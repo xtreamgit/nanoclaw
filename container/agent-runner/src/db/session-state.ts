@@ -77,3 +77,56 @@ export function setContinuation(providerName: string, id: string): void {
 export function clearContinuation(providerName: string): void {
   deleteValue(continuationKey(providerName));
 }
+
+// ── Ghost-action prevention ──────────────────────────────────────────────────
+//
+// When context compaction fires mid-turn the new session loses behavioural
+// context. Two flags survive in session_state (outbound.db) across the
+// continuation reset so the next turn can warn the agent:
+//
+//   compaction_warning  — set when compaction is detected, cleared after
+//                         the warning has been injected into the next prompt.
+//   turn_in_progress    — set at turn start, cleared at successful turn end.
+//                         If it exists on container startup the previous turn
+//                         was interrupted (crash or abrupt kill).
+
+const COMPACTION_WARNING_KEY = 'compaction_warning';
+const TURN_IN_PROGRESS_KEY = 'turn_in_progress';
+
+export function setCompactionWarning(): void {
+  setValue(
+    COMPACTION_WARNING_KEY,
+    'Context compaction occurred during the previous turn. ' +
+      'Tool calls initiated before compaction may not have completed. ' +
+      'Verify any pending actions before proceeding.',
+  );
+}
+
+/** Returns the warning text and deletes the key so it fires only once. */
+export function getAndClearCompactionWarning(): string | null {
+  const val = getValue(COMPACTION_WARNING_KEY);
+  if (!val) return null;
+  deleteValue(COMPACTION_WARNING_KEY);
+  return val;
+}
+
+export function setTurnInProgress(): void {
+  setValue(TURN_IN_PROGRESS_KEY, new Date().toISOString());
+}
+
+export function clearTurnInProgress(): void {
+  deleteValue(TURN_IN_PROGRESS_KEY);
+}
+
+/**
+ * Call on container startup (after clearStaleProcessingAcks).
+ * If a turn_in_progress flag is present the previous container was killed
+ * or crashed mid-turn — return the timestamp so the caller can warn the agent.
+ * Always clears the flag regardless of return value.
+ */
+export function getAndClearInterruptedTurn(): string | null {
+  const val = getValue(TURN_IN_PROGRESS_KEY);
+  if (!val) return null;
+  deleteValue(TURN_IN_PROGRESS_KEY);
+  return val;
+}

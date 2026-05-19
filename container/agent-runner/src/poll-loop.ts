@@ -2,7 +2,16 @@ import { findByName, getAllDestinations, buildRoutingReminder, type DestinationE
 import { getPendingMessages, markProcessing, markCompleted, type MessageInRow } from './db/messages-in.js';
 import { writeMessageOut } from './db/messages-out.js';
 import { getInboundDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
-import { clearContinuation, migrateLegacyContinuation, setContinuation } from './db/session-state.js';
+import {
+  clearContinuation,
+  clearTurnInProgress,
+  getAndClearCompactionWarning,
+  getAndClearInterruptedTurn,
+  migrateLegacyContinuation,
+  setContinuation,
+  setCompactionWarning,
+  setTurnInProgress,
+} from './db/session-state.js';
 import { clearCurrentInReplyTo, setCurrentInReplyTo } from './current-batch.js';
 import {
   formatMessages,
@@ -65,6 +74,15 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
   // Clear leftover 'processing' acks from a previous crashed container.
   // This lets the new container re-process those messages.
   clearStaleProcessingAcks();
+
+  // Ghost-action prevention: if the previous container was killed mid-turn
+  // the turn_in_progress flag will still be set. Record the warning now so
+  // it gets injected into the first real prompt below.
+  const interruptedAt = getAndClearInterruptedTurn();
+  if (interruptedAt) {
+    log(`Previous turn was interrupted at ${interruptedAt} — will warn agent on next prompt`);
+    setCompactionWarning(); // reuse the same warning slot: "may not have completed"
+  }
 
   let pollCount = 0;
   let isFirstPoll = true;
@@ -163,9 +181,20 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
 
     // Format messages: passthrough commands get raw text (only if the
     // provider natively handles slash commands), others get XML.
-    const prompt = formatMessagesWithCommands(keep, config.provider.supportsNativeSlashCommands);
+    let prompt = formatMessagesWithCommands(keep, config.provider.supportsNativeSlashCommands);
+
+    // Ghost-action prevention: if a compaction or crash warning is pending,
+    // prepend it so the agent re-verifies before acting on assumed state.
+    const ghostWarning = getAndClearCompactionWarning();
+    if (ghostWarning) {
+      log(`Injecting ghost-action warning into prompt`);
+      prompt = `<system>${ghostWarning}</system>\n\n${prompt}`;
+    }
 
     log(`Processing ${keep.length} message(s), kinds: ${[...new Set(keep.map((m) => m.kind))].join(',')}`);
+
+    // Mark turn as in-progress so a crash/kill leaves a detectable flag.
+    setTurnInProgress();
 
     const query = config.provider.query({
       prompt,
@@ -182,6 +211,8 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     setCurrentInReplyTo(routing.inReplyTo);
     try {
       const result = await processQuery(query, routing, processingIds, config.providerName);
+      // Turn completed cleanly — clear the in-progress flag.
+      clearTurnInProgress();
       if (result.continuation === null) {
         // processQuery explicitly cleared (e.g. compaction detected) — reset local copy too
         continuation = undefined;
@@ -394,6 +425,7 @@ async function processQuery(
             log('Context compaction detected — clearing continuation so next turn starts fresh');
             clearContinuation(providerName);
             queryContinuation = null; // signal outer loop to reset its copy
+            setCompactionWarning(); // inject ghost-action warning into next prompt
           }
           const { hasUnwrapped } = dispatchResultText(event.text, routing);
           if (hasUnwrapped && !unwrappedNudged) {
