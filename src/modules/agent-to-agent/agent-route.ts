@@ -210,10 +210,11 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
   // read the bytes — they live in a session dir it doesn't mount.
   const forwardedContent = forwardFileAttachments(msg, a2aMsgId, session, targetAgentGroupId, targetSession.id);
 
+  const now = new Date().toISOString();
   writeSessionMessage(targetAgentGroupId, targetSession.id, {
     id: a2aMsgId,
     kind: 'chat',
-    timestamp: new Date().toISOString(),
+    timestamp: now,
     platformId: session.agent_group_id,
     channelType: 'agent',
     threadId: null,
@@ -227,6 +228,31 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
     a2aMsgId,
     forwardedFileCount: countForwardedFiles(forwardedContent),
   });
+
+  // Delivery receipt — written back to the sender's inbound.db so there is a
+  // ground-truth host record that this message reached the target. trigger=0
+  // means the container is not woken for this row; it reads it as context on
+  // its next scheduled turn. Self-messages (approval prompts, etc.) don't get
+  // a receipt — the sender and recipient are the same session.
+  if (targetAgentGroupId !== session.agent_group_id) {
+    // No platformId/channelType — receipts are host-generated audit rows, not
+    // incoming messages from the peer, and must not trigger the inbound rate cap.
+    writeSessionMessage(session.agent_group_id, session.id, {
+      id: `rcpt-${a2aMsgId}`,
+      kind: 'system',
+      timestamp: now,
+      trigger: 0,
+      content: JSON.stringify({
+        type: 'delivery_receipt',
+        for_message_id: msg.id,
+        a2a_message_id: a2aMsgId,
+        delivered_to: targetAgentGroupId,
+        target_session: targetSession.id,
+        at: now,
+      }),
+    });
+  }
+
   const fresh = getSession(targetSession.id);
   if (fresh) await wakeContainer(fresh);
 }

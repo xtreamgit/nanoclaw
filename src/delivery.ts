@@ -303,6 +303,12 @@ async function deliverMessage(
         )
         .get(session.agent_group_id, 'channel', mg.id);
       if (!row) {
+        log.error('CRITICAL: unauthorized channel destination — message will be marked failed', {
+          agentGroupId: session.agent_group_id,
+          channelType: mg.channel_type,
+          platformId: mg.platform_id,
+          messageId: msg.id,
+        });
         throw new Error(
           `unauthorized channel destination: ${session.agent_group_id} cannot send to ${mg.channel_type}/${mg.platform_id}`,
         );
