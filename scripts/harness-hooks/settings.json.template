@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /workspace/agent/harness-checks/check_journal_mode.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "mcp__nanoclaw__send_message|mcp__nanoclaw__send_file",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /workspace/agent/harness-checks/verify_send.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}
