@@ -239,12 +239,21 @@ export function writeSessionMessage(
     // Rate-cap: guard against context floods from external senders.
     // Skipped for system/scheduling messages (no platformId).
     if (message.platformId) {
+      // Timestamps in messages_in use ISO format ("2026-05-19T03:02:05Z") while
+      // SQLite's datetime() returns space-separated format ("2026-05-19 03:06:06").
+      // The T character (ASCII 84) sorts higher than space (ASCII 32), so ISO
+      // timestamps always compare as newer than datetime() output — making the
+      // window check permanently true. Normalize stored timestamps to space format
+      // by stripping T and Z before comparing.
+      const windowExpr = (secs: number) =>
+        `replace(replace(timestamp, 'T', ' '), 'Z', '') > datetime('now', '-${secs} seconds')`;
+
       // 1. Content dedup — drop byte-for-byte repeats within the dedup window.
       const isDup = db
         .prepare(
           `SELECT 1 FROM messages_in
            WHERE platform_id = ? AND content = ?
-             AND timestamp > datetime('now', '-${DEDUP_WINDOW_SECS} seconds')
+             AND ${windowExpr(DEDUP_WINDOW_SECS)}
            LIMIT 1`,
         )
         .get(message.platformId, content) as 1 | undefined;
@@ -257,7 +266,7 @@ export function writeSessionMessage(
       const { count } = db
         .prepare(
           `SELECT COUNT(*) as count FROM messages_in
-           WHERE platform_id = ? AND timestamp > datetime('now', '-${RATE_CAP_WINDOW_SECS} seconds')`,
+           WHERE platform_id = ? AND ${windowExpr(RATE_CAP_WINDOW_SECS)}`,
         )
         .get(message.platformId) as { count: number };
 
@@ -267,7 +276,7 @@ export function writeSessionMessage(
           .prepare(
             `SELECT 1 FROM messages_in
              WHERE kind = 'rate-limit-notice'
-               AND timestamp > datetime('now', '-${RATE_CAP_WINDOW_SECS} seconds')
+               AND ${windowExpr(RATE_CAP_WINDOW_SECS)}
              LIMIT 1`,
           )
           .get() as 1 | undefined;
