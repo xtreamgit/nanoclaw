@@ -32,6 +32,11 @@ const SDK_DISALLOWED_TOOLS = [
   'ExitPlanMode',
   'EnterWorktree',
   'ExitWorktree',
+  // Claude Code SDK built-ins that conflict with NanoClaw's MCP-based routing.
+  // Agents must use mcp__nanoclaw__send_message, not the SDK SendMessage.
+  'SendMessage',
+  'TeamCreate',
+  'TeamDelete',
 ];
 
 // Tool allowlist for NanoClaw agent containers. MCP-tool entries are derived
@@ -51,9 +56,6 @@ const TOOL_ALLOWLIST = [
   'Task',
   'TaskOutput',
   'TaskStop',
-  'TeamCreate',
-  'TeamDelete',
-  'SendMessage',
   'TodoWrite',
   'ToolSearch',
   'Skill',
