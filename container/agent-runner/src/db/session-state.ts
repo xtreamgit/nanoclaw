@@ -94,11 +94,26 @@ const COMPACTION_WARNING_KEY = 'compaction_warning';
 const TURN_IN_PROGRESS_KEY = 'turn_in_progress';
 
 export function setCompactionWarning(): void {
+  // Include in-flight tool context so the next session knows exactly what
+  // was running when compaction fired — reduces false negatives on ghost checks.
+  let pendingContext = '';
+  try {
+    const state = getOutboundDb()
+      .prepare('SELECT current_tool, tool_started_at FROM container_state WHERE id = 1')
+      .get() as { current_tool: string | null; tool_started_at: string | null } | undefined;
+    if (state?.current_tool) {
+      const since = state.tool_started_at ? ` (started ${state.tool_started_at})` : '';
+      pendingContext = ` Tool in flight at compaction: ${state.current_tool}${since}.`;
+    }
+  } catch {
+    // container_state may not exist in older sessions — silently ignore
+  }
   setValue(
     COMPACTION_WARNING_KEY,
     'Context compaction occurred during the previous turn. ' +
-      'Tool calls initiated before compaction may not have completed. ' +
-      'Verify any pending actions before proceeding.',
+      'Tool calls initiated before compaction may not have completed.' +
+      pendingContext +
+      ' Verify any pending actions before proceeding.',
   );
 }
 

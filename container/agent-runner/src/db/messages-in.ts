@@ -40,6 +40,21 @@ export interface MessageInRow {
   content: string;
 }
 
+/** Result of rate-limit filtering applied to a pending message batch. */
+export interface RateLimitResult {
+  /** Messages to forward to the agent normally. */
+  keep: MessageInRow[];
+  /** Message IDs to mark completed without processing (rate-dropped). */
+  drop: string[];
+  /** Per-sender notices to write as system messages (one per rate-limit window). */
+  notices: Array<{
+    platformId: string;
+    channelType: string | null;
+    threadId: string | null;
+    count: number;
+  }>;
+}
+
 // Cap on how many messages reach the agent in one prompt. Read from
 // container.json; falls back to 10.
 function getMaxMessagesPerPrompt(): number {
@@ -49,6 +64,109 @@ function getMaxMessagesPerPrompt(): number {
     // Config not loaded yet (e.g. test harness) — use default
     return 10;
   }
+}
+
+const RATE_LIMIT_WINDOW_SECONDS = 60;
+const RATE_LIMIT_MAX_PER_WINDOW = 10;
+const DEDUP_WINDOW_SECONDS = 5;
+
+function rateLimitNoticeKey(platformId: string): string {
+  return `rate_limit_notified:${platformId}`;
+}
+
+/**
+ * Apply per-sender rate limiting and deduplication to a batch of pending messages.
+ *
+ * Rate limit: if a sender has sent > RATE_LIMIT_MAX_PER_WINDOW messages in the
+ * last RATE_LIMIT_WINDOW_SECONDS, all their messages in this batch are dropped.
+ * One notice is queued per sender per window.
+ *
+ * Dedup: if two consecutive messages from the same sender have identical content
+ * within DEDUP_WINDOW_SECONDS, the later one is dropped silently.
+ */
+export function applyRateLimits(
+  messages: MessageInRow[],
+  inbound: ReturnType<typeof openInboundDb>,
+  outbound: ReturnType<typeof getOutboundDb>,
+): RateLimitResult {
+  if (messages.length === 0) return { keep: [], drop: [], notices: [] };
+
+  const keep: MessageInRow[] = [];
+  const drop: string[] = [];
+  const notices: RateLimitResult['notices'] = [];
+
+  const senderIds = [...new Set(messages.map((m) => m.platform_id).filter(Boolean))] as string[];
+  const rateLimitedSenders = new Set<string>();
+
+  for (const senderId of senderIds) {
+    const recentCount = (
+      inbound
+        .prepare(
+          `SELECT COUNT(*) AS cnt FROM messages_in
+           WHERE platform_id = ?
+             AND datetime(timestamp) >= datetime('now', '-${RATE_LIMIT_WINDOW_SECONDS} seconds')`,
+        )
+        .get(senderId) as { cnt: number }
+    ).cnt;
+
+    if (recentCount > RATE_LIMIT_MAX_PER_WINDOW) {
+      rateLimitedSenders.add(senderId);
+
+      const noticeKey = rateLimitNoticeKey(senderId);
+      const lastNoticeRow = outbound
+        .prepare('SELECT value FROM session_state WHERE key = ?')
+        .get(noticeKey) as { value: string } | undefined;
+
+      const alreadyNotified =
+        lastNoticeRow &&
+        (Date.now() - new Date(lastNoticeRow.value).getTime()) / 1000 < RATE_LIMIT_WINDOW_SECONDS;
+
+      if (!alreadyNotified) {
+        outbound
+          .prepare('INSERT OR REPLACE INTO session_state (key, value, updated_at) VALUES (?, ?, ?)')
+          .run(noticeKey, new Date().toISOString(), new Date().toISOString());
+
+        const sample = messages.find((m) => m.platform_id === senderId);
+        if (sample) {
+          notices.push({
+            platformId: senderId,
+            channelType: sample.channel_type,
+            threadId: sample.thread_id,
+            count: recentCount,
+          });
+        }
+      }
+    }
+  }
+
+  const lastSeenContent = new Map<string, { content: string; timestamp: number }>();
+
+  for (const msg of messages) {
+    const senderId = msg.platform_id;
+
+    if (senderId && rateLimitedSenders.has(senderId)) {
+      drop.push(msg.id);
+      continue;
+    }
+
+    if (senderId) {
+      const last = lastSeenContent.get(senderId);
+      const msgTime = new Date(msg.timestamp).getTime();
+      if (
+        last &&
+        last.content === msg.content &&
+        (msgTime - last.timestamp) / 1000 <= DEDUP_WINDOW_SECONDS
+      ) {
+        drop.push(msg.id);
+        continue;
+      }
+      lastSeenContent.set(senderId, { content: msg.content, timestamp: msgTime });
+    }
+
+    keep.push(msg);
+  }
+
+  return { keep, drop, notices };
 }
 
 /**

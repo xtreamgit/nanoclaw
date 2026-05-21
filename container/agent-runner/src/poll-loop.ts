@@ -1,7 +1,7 @@
 import { findByName, getAllDestinations, buildRoutingReminder, type DestinationEntry } from './destinations.js';
-import { getPendingMessages, markProcessing, markCompleted, type MessageInRow } from './db/messages-in.js';
+import { getPendingMessages, markProcessing, markCompleted, applyRateLimits, type MessageInRow } from './db/messages-in.js';
 import { writeMessageOut } from './db/messages-out.js';
-import { getInboundDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
+import { getInboundDb, openInboundDb, getOutboundDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
 import {
   clearContinuation,
   clearTurnInProgress,
@@ -88,9 +88,35 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
   let isFirstPoll = true;
   while (true) {
     // Skip system messages — they're responses for MCP tools (e.g., ask_user_question)
-    const messages = getPendingMessages(isFirstPoll).filter((m) => m.kind !== 'system');
+    const rawMessages = getPendingMessages(isFirstPoll).filter((m) => m.kind !== 'system');
     isFirstPoll = false;
     pollCount++;
+
+    // Rate-limit and dedup: drop flood messages, write one notice per sender per window
+    const { keep: messages, drop: rateDrop, notices: rateNotices } = applyRateLimits(
+      rawMessages,
+      openInboundDb(),
+      getOutboundDb(),
+    );
+    if (rateDrop.length > 0) {
+      markCompleted(rateDrop);
+      log(`Rate-limited ${rateDrop.length} message(s) from flood sender(s)`);
+    }
+    for (const notice of rateNotices) {
+      log(`RATE LIMIT: sender platform_id=${notice.platformId} sent ${notice.count} messages in 60s — notifying`);
+      writeMessageOut({
+        id: generateId(),
+        kind: 'chat',
+        platform_id: notice.platformId,
+        channel_type: notice.channelType,
+        thread_id: notice.threadId,
+        content: JSON.stringify({
+          text: `[Rate limit] ${notice.count} messages received in the last 60 seconds from your session. ` +
+            `Excess messages are being dropped to protect agent stability. ` +
+            `Please slow down message frequency. This notice will not repeat for 60 seconds.`,
+        }),
+      });
+    }
 
     // Periodic heartbeat so we know the loop is alive
     if (pollCount % 30 === 0) {
@@ -344,7 +370,32 @@ async function processQuery(
         // everything. Filtering on thread_id here caused deadlocks when the
         // initial batch and follow-ups had mismatched thread_ids (e.g. a
         // host-generated welcome trigger with null thread vs a Discord DM reply).
-        const newMessages = pending.filter((m) => m.kind !== 'system');
+        const rawNew = pending.filter((m) => m.kind !== 'system');
+        if (rawNew.length === 0) return;
+
+        // Apply rate limits to follow-up messages too
+        const { keep: newMessages, drop: newRateDrop, notices: newRateNotices } = applyRateLimits(
+          rawNew,
+          openInboundDb(),
+          getOutboundDb(),
+        );
+        if (newRateDrop.length > 0) {
+          markCompleted(newRateDrop);
+          log(`Follow-up rate-limited ${newRateDrop.length} message(s)`);
+        }
+        for (const notice of newRateNotices) {
+          writeMessageOut({
+            id: generateId(),
+            kind: 'chat',
+            platform_id: notice.platformId,
+            channel_type: notice.channelType,
+            thread_id: notice.threadId,
+            content: JSON.stringify({
+              text: `[Rate limit] ${notice.count} messages received in the last 60 seconds. ` +
+                `Excess messages dropped. Slow down message frequency.`,
+            }),
+          });
+        }
         if (newMessages.length === 0) return;
 
         const newIds = newMessages.map((m) => m.id);
@@ -522,11 +573,33 @@ function dispatchResultText(text: string, routing: RoutingContext): { sent: numb
 function sendToDestination(dest: DestinationEntry, body: string, routing: RoutingContext): void {
   const platformId = dest.type === 'channel' ? dest.platformId! : dest.agentGroupId!;
   const channelType = dest.type === 'channel' ? dest.channelType! : 'agent';
+
+  // Validate: a null/empty platform_id means this destination is misconfigured.
+  // Sending would route the message nowhere or to the wrong agent — drop it and log.
+  if (!platformId) {
+    log(
+      `ERROR: destination "${dest.name}" (type=${dest.type}) has no platform_id — ` +
+        `dropping message to prevent mis-delivery. Hector must fix the destinations table.`,
+    );
+    return;
+  }
+
+  // Audit log: routing is fully traceable in container stderr for mis-delivery investigations
+  log(`Routing "${dest.name}" → platform_id=${platformId} channel=${channelType}`);
+
   // Resolve thread_id per-destination from the most recent inbound message
   // that came from this same channel+platform. In agent-shared sessions,
   // different destinations have different thread contexts — using a single
   // routing.threadId would stamp one channel's thread onto another.
   const destRouting = resolveDestinationThread(channelType, platformId);
+
+  // For agent-to-agent sends, embed a receipt_request in the content so the
+  // host can write a delivery_receipt back to the sender's inbound.db.
+  const contentPayload =
+    channelType === 'agent'
+      ? { text: body, receipt_request: { sender_agent_group_id: routing.platformId ?? null } }
+      : { text: body };
+
   writeMessageOut({
     id: generateId(),
     in_reply_to: destRouting?.inReplyTo ?? routing.inReplyTo,
@@ -534,7 +607,7 @@ function sendToDestination(dest: DestinationEntry, body: string, routing: Routin
     platform_id: platformId,
     channel_type: channelType,
     thread_id: destRouting?.threadId ?? null,
-    content: JSON.stringify({ text: body }),
+    content: JSON.stringify(contentPayload),
   });
 }
 
