@@ -122,6 +122,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     if (pollCount % 30 === 0) {
       log(`Poll heartbeat (${pollCount} iterations, ${messages.length} pending)`);
     }
+    touchHeartbeat();
 
     if (messages.length === 0) {
       await sleep(POLL_INTERVAL_MS);
