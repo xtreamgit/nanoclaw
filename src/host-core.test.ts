@@ -946,9 +946,7 @@ describe('agent-to-agent routing', () => {
     );
 
     const slackDb = new Database(inboundDbPath('ag-pa', paSlackSession.id));
-    const slackA2a = slackDb
-      .prepare("SELECT * FROM messages_in WHERE channel_type = 'agent' AND kind = 'chat'")
-      .all();
+    const slackA2a = slackDb.prepare("SELECT * FROM messages_in WHERE channel_type = 'agent' AND kind = 'chat'").all();
     slackDb.close();
 
     const discordDb = new Database(inboundDbPath('ag-pa', paDiscordSession.id));
