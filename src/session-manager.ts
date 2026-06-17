@@ -229,6 +229,11 @@ export function writeSessionMessage(
      * Dying containers (past first poll) skip these rows.
      */
     onWake?: 0 | 1;
+    /**
+     * Initial status. Defaults to 'pending'. Pass 'completed' for audit-only
+     * rows (e.g. delivery receipts) that are never meant to be processed.
+     */
+    status?: 'pending' | 'completed';
   },
 ): void {
   // Extract base64 attachment data, save to inbox, replace with file paths
@@ -318,6 +323,7 @@ export function writeSessionMessage(
       trigger: message.trigger ?? 1,
       sourceSessionId: message.sourceSessionId ?? null,
       onWake: message.onWake ?? 0,
+      status: message.status,
     });
   } finally {
     db.close();

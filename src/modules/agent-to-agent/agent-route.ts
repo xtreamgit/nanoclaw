@@ -242,6 +242,7 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
       kind: 'system',
       timestamp: now,
       trigger: 0,
+      status: 'completed',
       content: JSON.stringify({
         type: 'delivery_receipt',
         for_message_id: msg.id,

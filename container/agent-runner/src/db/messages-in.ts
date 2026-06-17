@@ -190,6 +190,7 @@ export function getPendingMessages(isFirstPoll = false): MessageInRow[] {
       .prepare(
         `SELECT * FROM messages_in
          WHERE status = 'pending'
+           AND kind != 'system'
            AND (process_after IS NULL OR datetime(process_after) <= datetime('now'))
            ${onWakeFilter}
          ORDER BY seq DESC

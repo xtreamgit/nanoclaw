@@ -238,8 +238,6 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     setCurrentInReplyTo(routing.inReplyTo);
     try {
       const result = await processQuery(query, routing, processingIds, config.providerName);
-      // Turn completed cleanly — clear the in-progress flag.
-      clearTurnInProgress();
       if (result.continuation === null) {
         // processQuery explicitly cleared (e.g. compaction detected) — reset local copy too
         continuation = undefined;
@@ -271,6 +269,10 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       });
     } finally {
       clearCurrentInReplyTo();
+      // Always clear turn_in_progress — even on thrown errors. Without this,
+      // an exception from processQuery leaves the flag set indefinitely, causing
+      // every subsequent startup to inject a ghost-action warning.
+      clearTurnInProgress();
     }
 
     // Ensure completed even if processQuery ended without a result event
