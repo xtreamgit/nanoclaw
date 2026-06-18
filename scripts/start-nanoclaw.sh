@@ -13,6 +13,15 @@ POLL_INTERVAL=10
 
 log() { echo "[start-nanoclaw] $(date '+%H:%M:%S') $*" >&2; }
 
+# ── 0. Resolve webhook port from .env (default 3000) ────────────────────────
+WEBHOOK_PORT=3000
+if [ -f "$NANOCLAW_DIR/.env" ]; then
+  port_line=$(grep -E '^WEBHOOK_PORT=' "$NANOCLAW_DIR/.env" | tail -1)
+  if [ -n "$port_line" ]; then
+    WEBHOOK_PORT="${port_line#WEBHOOK_PORT=}"
+  fi
+fi
+
 # ── 1. Wait for Docker ───────────────────────────────────────────────────────
 elapsed=0
 until "$DOCKER" info >/dev/null 2>&1; do
@@ -26,19 +35,20 @@ until "$DOCKER" info >/dev/null 2>&1; do
 done
 log "Docker is ready."
 
-# ── 2. Clear any stale process holding port 3000 ────────────────────────────
-stale_pid=$("$LSOF" -ti :3000 2>/dev/null || true)
+# ── 2. Clear any stale process holding the webhook port ─────────────────────
+stale_pid=$("$LSOF" -ti :"$WEBHOOK_PORT" 2>/dev/null || true)
 if [ -n "$stale_pid" ]; then
-  log "Port 3000 held by PID $stale_pid — sending SIGTERM."
+  log "Port $WEBHOOK_PORT held by PID $stale_pid — sending SIGTERM."
   kill -TERM "$stale_pid" 2>/dev/null || true
   sleep 4
   if kill -0 "$stale_pid" 2>/dev/null; then
     log "PID $stale_pid still alive after SIGTERM — force-killing."
     kill -9 "$stale_pid" 2>/dev/null || true
   fi
-  log "Port 3000 cleared."
+  log "Port $WEBHOOK_PORT cleared."
 fi
 
 # ── 3. Start NanoClaw ────────────────────────────────────────────────────────
-log "Starting NanoClaw."
+log "Starting NanoClaw on webhook port $WEBHOOK_PORT."
+export WEBHOOK_PORT
 exec "$NODE" "$NANOCLAW_DIR/dist/index.js"
