@@ -30,7 +30,7 @@ import { wakeContainer } from '../../container-runner.js';
 import { readEnvFile } from '../../env.js';
 import { log } from '../../log.js';
 
-const env = readEnvFile(['TASK_INJECT_SECRET', 'TASK_INJECT_PORT']);
+const env = readEnvFile(['TASK_INJECT_SECRET', 'TASK_INJECT_PORT', 'TASK_INJECT_HOST']);
 const PORT = parseInt(env.TASK_INJECT_PORT ?? '3001', 10);
 const SECRET = env.TASK_INJECT_SECRET ?? '';
 
@@ -126,10 +126,16 @@ const server = http.createServer(async (req, res) => {
   res.end(JSON.stringify({ taskId, session: session.id }));
 });
 
+// TASK_INJECT_HOST controls the bind address.
+// Default: '127.0.0.1' (loopback only).
+// Set to '0.0.0.0' when callers run in Docker (they reach the host via
+// host.docker.internal, which arrives on a non-loopback interface).
+const HOST = env.TASK_INJECT_HOST ?? '127.0.0.1';
+
 if (!SECRET) {
   log.warn('TASK_INJECT_SECRET is not set — task inject endpoint disabled');
 } else {
-  server.listen(PORT, '127.0.0.1', () => {
-    log.info('Task inject server listening', { port: PORT, host: '127.0.0.1' });
+  server.listen(PORT, HOST, () => {
+    log.info('Task inject server listening', { port: PORT, host: HOST });
   });
 }
