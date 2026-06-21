@@ -39,3 +39,6 @@ groups/*
 .nanoclaw/
 
 agents-sdk-docs
+
+# Local Docker backup tooling + docs (install-specific; not for upstream)
+dvlm_docker_backup/
